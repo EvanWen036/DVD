@@ -1,10 +1,11 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
 class CreateCollection(BaseModel):
     name: str
     dim: int
     metric: str = Field("cosine", pattern="^(cosine|l2)$")
+    backend: Literal["brute", "hnsw", "sharded_hnsw"] = "brute"
 
 class Point(BaseModel):
     id: str
