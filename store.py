@@ -256,6 +256,9 @@ class Registry:
         elif backend == "sharded_hnsw":
             from sharded_hnsw import ShardedHNSWCollection
             col = ShardedHNSWCollection(dim, metric)
+        elif backend == "distributed":
+            from distributed_collection import WalDistributedCollection
+            col = WalDistributedCollection(dim, metric, replica_backend="hnsw")
         else:
             raise ValueError(f"unknown backend '{backend}' (use 'brute' or 'hnsw')")
 
@@ -265,3 +268,15 @@ class Registry:
         if name not in self._cols:
             raise KeyError("collection not found")
         return self._cols[name]
+
+def make_collection(dim: int, metric: str, backend: str) -> BaseCollection:
+    backend = backend.lower()
+    if backend == "brute":
+        return BruteCollection(dim, metric)
+    elif backend == "hnsw":
+        return HNSWCollection(dim, metric)
+    elif backend == "sharded_hnsw":
+        from sharded_hnsw import ShardedHNSWCollection
+        return ShardedHNSWCollection(dim, metric)
+    else:
+        raise ValueError(f"unknown backend '{backend}' (use 'brute' or 'hnsw')")
