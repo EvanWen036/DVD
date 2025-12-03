@@ -74,6 +74,8 @@ Pydantic models defining the API request/response schemas:
 - **`test_hnsw.py`**: Unit tests for HNSW collection correctness
 - **`test_wal_distributed.py`**: Tests for distributed collection and WAL functionality
 
+## AI Usage
+For this project, we utilized AI to help with debugging, syntax, and building a general framework for our implementation. AI helped with making the types, API formatting, and the BaseCollection in store.py. Furthermore, we also asked AI for help in coming up with experiments to run for our project. 
 
 ## Usage
 
