@@ -9,7 +9,6 @@ from sharded_hnsw import ShardedHNSWCollection
 
 
 def make_random_points(n: int, dim: int) -> List[dict]:
-    """Generate n random points in R^dim with ids and dummy metadata."""
     vecs = np.random.randn(n, dim).astype(np.float32)
     points = []
     for i in range(n):
@@ -27,12 +26,6 @@ def run_pair_against_brute(
     queries: np.ndarray,
     top_k: int,
 ) -> Tuple[float, float, float]:
-    """
-    Run queries against brute & another collection and compute:
-    - avg brute query time
-    - avg other query time
-    - avg recall@k of `other` vs brute (intersection / k)
-    """
     n_queries = queries.shape[0]
     brute_times = []
     other_times = []
@@ -41,13 +34,11 @@ def run_pair_against_brute(
     for q in queries:
         q_list = q.tolist()
 
-        # Brute
         t0 = time.time()
         b_hits = brute.query(q_list, top_k)
         t1 = time.time()
         brute_times.append(t1 - t0)
 
-        # Other collection (HNSW or ShardedHNSW)
         t0 = time.time()
         o_hits = other.query(q_list, top_k)
         t1 = time.time()
@@ -56,7 +47,7 @@ def run_pair_against_brute(
         b_ids = [h["id"] for h in b_hits]
         o_ids = [h["id"] for h in o_hits]
 
-        if not b_ids:  # empty index
+        if not b_ids:  
             recalls.append(1.0)
             continue
 
@@ -77,12 +68,11 @@ def main():
     n_points = 100_000
     n_queries = 2000
     top_k = 100
-    metric = "cosine"  # or "l2"
+    metric = "cosine"  
 
     print(f"dim={dim}, n_points={n_points}, n_queries={n_queries}, top_k={top_k}")
     print(f"metric={metric}")
 
-    # ---------- create collections ----------
     brute = BruteCollection(dim=dim, metric=metric)
     hnsw = HNSWCollection(
         dim=dim,
@@ -95,14 +85,13 @@ def main():
     sharded = ShardedHNSWCollection(
         dim=dim,
         metric=metric,
-        n_shards=4,               # tweak this to test different shard counts
+        n_shards=4,               
         max_elements_per_shard=n_points // 4 + 1024,
         M=16,
         ef_construction=200,
         ef=200,
     )
 
-    # ---------- upsert data ----------
     print("Generating random points...")
     points = make_random_points(n_points, dim)
 
@@ -124,11 +113,9 @@ def main():
     t1 = time.time()
     print(f"Sharded upsert time: {t1 - t0:.3f}s")
 
-    # ---------- generate queries ----------
     print("Generating query vectors...")
     queries = np.random.randn(n_queries, dim).astype(np.float32)
 
-    # ---------- run benchmarks ----------
     print("\nRunning benchmark vs HNSW...")
     avg_b_brute, avg_hnsw, recall_hnsw = run_pair_against_brute(
         brute, hnsw, queries, top_k
@@ -139,7 +126,6 @@ def main():
         brute, sharded, queries, top_k
     )
 
-    # ---------- results ----------
     print("\n=== Results (HNSW) ===")
     print(f"Avg brute query time:   {avg_b_brute * 1e3:.3f} ms")
     print(f"Avg HNSW query time:    {avg_hnsw * 1e3:.3f} ms")

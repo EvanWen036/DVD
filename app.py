@@ -11,7 +11,7 @@ reg = Registry()
 @app.post("/collections")
 def create_collection(body: CreateCollection):
     try:
-        reg.create(body.name, body.dim, body.metric, backend=body.backend)  # NEW
+        reg.create(body.name, body.dim, body.metric, backend=body.backend)
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(400, str(e))

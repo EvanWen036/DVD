@@ -1,4 +1,3 @@
-# bench_routing_histogram.py
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -25,7 +24,6 @@ def run_routing_benchmark(
     top_k: int = 5,
     load_penalty: float = 10.0,
 ):
-    # Three replicas with different artificial delays (ms)
     replica_delays_ms = [0.0, 3.0, 7.0]
 
     col = WalDistributedCollection(
@@ -33,18 +31,16 @@ def run_routing_benchmark(
         metric="cosine",
         replica_backend="brute",
         n_replicas=3,
-        replication_factor=3,    # wait for all replicas to replay WAL
+        replication_factor=3,   
         window_size=100,
         load_penalty=load_penalty,
         replica_delays_ms=replica_delays_ms,
     )
 
-    # Load some data
     points = make_points(dim, n_points)
     print(f"[load_penalty={load_penalty}] Upserting points...")
     col.upsert(points)
 
-    # Let replica workers catch up
     time.sleep(0.2)
 
     chosen_indices = []
@@ -71,11 +67,10 @@ if __name__ == "__main__":
         chosen, latencies, delays = run_routing_benchmark(load_penalty=lp)
         results.append((lp, chosen, latencies, delays))
 
-    # 2x2 grid of histograms
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True, sharey=True)
     axes = axes.ravel()
 
-    bins = [-0.5, 0.5, 1.5, 2.5]  # for replica indices 0,1,2
+    bins = [-0.5, 0.5, 1.5, 2.5] 
 
     for ax, (lp, chosen, _, delays) in zip(axes, results):
         ax.hist(chosen, bins=bins, rwidth=0.8)

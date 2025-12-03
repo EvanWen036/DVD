@@ -1,4 +1,3 @@
-# replica_worker.py
 from __future__ import annotations
 import threading
 from typing import List, Dict
@@ -35,8 +34,8 @@ class ReplicaWorker:
     def _run(self):
         while not self._stop:
             rec = self.wal.next_from(self._last_lsn)
-            delay_ms = random.uniform(0.0, 15.0)  # tune this range
-            time.sleep(delay_ms / 1000.0) # simulate replication lag
+            delay_ms = random.uniform(0.0, 15.0)  
+            time.sleep(delay_ms / 1000.0) 
 
             self._apply(rec)
             self._last_lsn = rec.lsn

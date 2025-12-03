@@ -21,7 +21,7 @@ class DeleteRequest(BaseModel):
 class QueryRequest(BaseModel):
     vector: List[float]
     top_k: int = 5
-    filter: Optional[Dict[str, Any]] = None  # placeholder (not applied yet)
+    filter: Optional[Dict[str, Any]] = None 
 
 class QueryHit(BaseModel):
     id: str

@@ -1,4 +1,3 @@
-# test_wal_distributed.py
 import time
 import numpy as np
 
@@ -23,28 +22,23 @@ def main():
     n_points = 10000
     top_k = 50
 
-    # Baseline exact collection
     baseline = BruteCollection(dim, metric="cosine")
 
-    # WAL-distributed collection using brute replicas (for exact match)
     col = WalDistributedCollection(
         dim=dim,
         metric="cosine",
         replica_backend="hnsw",
         n_replicas=3,
-        replication_factor=3,  # wait for all replicas on write
+        replication_factor=3,  
     )
 
-    # ------------- load data ------------- #
     points = make_points(dim, n_points)
     print("Upserting points...")
     baseline.upsert(points)
     col.upsert(points)
 
-    # give replica threads a moment just in case
     time.sleep(0.1)
 
-    # ------------- query tests ------------- #
     print("Running query checks...")
     for q in range(50):
         vec = np.random.randn(dim).astype("float32").tolist()

@@ -1,4 +1,3 @@
-# bench_lag_consistency.py
 import time
 import random
 import numpy as np
@@ -26,23 +25,20 @@ def run_lag_experiment(
     rounds: int = 300,
     top_k: int = 5,
 ):
-    # ---------- Baseline exact collection ----------
     baseline = BruteCollection(dim, metric="cosine")
 
-    # ---------- WAL-distributed with async replication (replicas can lag) ----------
     dist = WalDistributedCollection(
         dim=dim,
         metric="cosine",
         replica_backend="brute",       # brute so we get exact results
         n_replicas=3,
-        replication_factor=1,          # minimal guarantees
+        replication_factor=1,        
         window_size=100,
         load_penalty=10.0,
         replica_delays_ms=[0.0, 3.0, 7.0],  # simulate slower replicas
-        wait_for_replicas=False,       # async replication (laggy)
+        wait_for_replicas=False,       
     )
 
-    # ---------- Initial bulk load (sync) ----------
     print("Initial bulk load...")
     pts0 = make_points(dim, 0, initial_points)
     baseline.upsert(pts0)
@@ -51,19 +47,16 @@ def run_lag_experiment(
     dist._wait_for_replicas = True
     dist.upsert(pts0)
     dist._wait_for_replicas = False
-    time.sleep(0.2)  # catch up
+    time.sleep(0.2)
 
-    # ---------- Interleaved async writes + queries ----------
     print("Running interleaved writes + reads under lag...")
     next_id = initial_points
 
-    # For plotting
     latest_lsns = []
-    replica_lsns = [[], [], []]     # one list per replica
-    used_primary_flags = []         # True if query used primary, else False
+    replica_lsns = [[], [], []]     
+    used_primary_flags = []         
 
     for r in range(rounds):
-        # --- random write pattern ---
         op = random.choice(["upsert_small", "upsert_batch", "delete_some"])
 
         if op == "upsert_small":
@@ -87,7 +80,6 @@ def run_lag_experiment(
         # tiny sleep so replica threads sometimes fall behind
         time.sleep(0.001)
 
-        # Snapshot LSN state *before* the query
         wal = dist._wal
         reps = dist._replicas
         latest = wal.latest_lsn()
@@ -95,7 +87,6 @@ def run_lag_experiment(
         for i, rep in enumerate(reps):
             replica_lsns[i].append(wal.replica_lsn(rep.id))
 
-        # --- query and compare with baseline ---
         qvec = np.random.randn(dim).astype("float32").tolist()
 
         hits_base = baseline.query(qvec, top_k)
@@ -112,15 +103,13 @@ def run_lag_experiment(
             )
 
         used_primary_flags.append(dist._last_used_primary)
-        # Let replicas catch up occasionally.
         if r % 10 == 0:
-            # every 10th round, give them a real catchup window
-            time.sleep(0.05)   # 50 ms → replicas can fully catch up
+            # catchup window
+            time.sleep(0.05)
         else:
-            # small delay so they *start* to fall behind
             time.sleep(0.001)
 
-    print("✅ All queries matched baseline under async (laggy) replication.")
+    print("All queries matched baseline under async (laggy) replication.")
     return latest_lsns, replica_lsns, used_primary_flags
 
 
@@ -128,7 +117,7 @@ def plot_lag_results(latest_lsns, replica_lsns, used_primary_flags):
     rounds = len(latest_lsns)
     x = np.arange(rounds)
 
-    # Figure 1: LSN vs round (shows lag)
+    # Figure 1: LSN vs round
     plt.figure(figsize=(10, 6))
     plt.plot(x, latest_lsns, label="latest WAL lsn", linewidth=2)
     for i, lsns in enumerate(replica_lsns):
@@ -143,7 +132,6 @@ def plot_lag_results(latest_lsns, replica_lsns, used_primary_flags):
     # Figure 2: primary vs replica usage over rounds
     plt.figure(figsize=(10, 3))
     used_primary_arr = np.array(used_primary_flags, dtype=int)
-    # 1 = primary, 0 = replica
     plt.step(x, used_primary_arr, where="post")
     plt.yticks([0, 1], ["replica", "primary"])
     plt.xlabel("Round")

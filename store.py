@@ -1,4 +1,3 @@
-# store.py
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -29,7 +28,7 @@ class BruteCollection(BaseCollection):
         if metric not in ("cosine", "l2"):
             raise ValueError("metric must be 'cosine' or 'l2'")
         self.dim = dim
-        self.metric = metric  # "cosine" or "l2"
+        self.metric = metric 
         self._id2idx: Dict[str, int] = {}
         self._ids: List[str] = []
         self._meta: List[Optional[dict]] = []
@@ -62,12 +61,10 @@ class BruteCollection(BaseCollection):
             i = self._id2idx.pop(vid)
             last_i = len(self._ids) - 1
             if i != last_i:
-                # move last into i
                 self._vecs[i] = self._vecs[last_i]
                 self._ids[i] = self._ids[last_i]
                 self._meta[i] = self._meta[last_i]
                 self._id2idx[self._ids[i]] = i
-            # shrink
             self._vecs = self._vecs[:-1]
             self._ids.pop()
             self._meta.pop()
@@ -84,7 +81,7 @@ class BruteCollection(BaseCollection):
             qn = q / (np.linalg.norm(q) + 1e-12)
             An = A / Aq
             return (An @ qn).astype(np.float32)
-        else:  # l2 distance -> convert to negative distance so higher is better
+        else:  
             if len(self._vecs) == 0:
                 return np.empty((0,), dtype=np.float32)
             d = np.linalg.norm(self._vecs - q[None, :], axis=1)
@@ -113,15 +110,6 @@ class BruteCollection(BaseCollection):
 
 
 class HNSWCollection(BaseCollection):
-    """
-    HNSW-backed collection using `hnswlib`.
-
-    Semantics:
-      - score is "higher is better"
-        * cosine: score = 1 - distance  (distance in [0, 2])
-        * l2:     score = -distance     (distance is L2^2 in hnswlib)
-    """
-
     def __init__(self, dim: int, metric: str = "cosine",
                  max_elements: int = 1024, M: int = 16,
                  ef_construction: int = 200, ef: int = 200):
@@ -138,12 +126,11 @@ class HNSWCollection(BaseCollection):
                                M=M)
         self._index.set_ef(ef)
 
-        # Map string ids -> int labels used by HNSW
         self._id2label: Dict[str, int] = {}
         self._label2id: Dict[int, str] = {}
         self._meta: Dict[str, Optional[dict]] = {}
 
-        self._next_label: int = 0  # next free label
+        self._next_label: int = 0 
 
     def _ensure_capacity(self, n_new: int) -> None:
         needed = self._next_label + n_new
@@ -156,7 +143,6 @@ class HNSWCollection(BaseCollection):
         if not points:
             return 0
 
-        # Ensure capacity for new items
         n_new_ids = sum(1 for p in points if p["id"] not in self._id2label)
         if n_new_ids > 0:
             self._ensure_capacity(n_new_ids)
@@ -186,7 +172,6 @@ class HNSWCollection(BaseCollection):
         if vecs:
             vecs_arr = np.stack(vecs, axis=0)
             labels_arr = np.asarray(labels, dtype=np.int64)
-            # hnswlib allows adding new vectors with existing labels to update them
             self._index.add_items(vecs_arr, labels_arr)
 
         return len(points)
@@ -197,7 +182,6 @@ class HNSWCollection(BaseCollection):
             label = self._id2label.pop(vid, None)
             if label is None:
                 continue
-            # mark_deleted keeps the node but excludes it from future queries
             self._index.mark_deleted(label)
             self._label2id.pop(label, None)
             self._meta.pop(vid, None)
@@ -223,11 +207,11 @@ class HNSWCollection(BaseCollection):
         for label, dist in zip(labels, distances):
             vid = self._label2id.get(int(label))
             if vid is None:
-                continue  # should not normally happen
+                continue 
             if self.metric == "cosine":
-                score = float(1.0 - dist)  # hnswlib cosine distance = 1 - cos
-            else:  # "l2"
-                score = float(-dist)       # hnswlib returns L2^2, we negate
+                score = float(1.0 - dist) 
+            else:
+                score = float(-dist)      
             hits.append({
                 "id": vid,
                 "score": score,
@@ -237,10 +221,6 @@ class HNSWCollection(BaseCollection):
 
 
 class Registry:
-    """
-    Polymorphic registry: each collection can choose its backend ("brute" or "hnsw"),
-    but the API code just sees `BaseCollection`.
-    """
     def __init__(self):
         self._cols: Dict[str, BaseCollection] = {}
 
