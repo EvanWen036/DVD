@@ -2,12 +2,72 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing as mp
 
 import numpy as np
 import hnswlib
 
 from store import BaseCollection
+
+"""
+Multiprocessing-powered sharded HNSW wrapper.
+
+Key changes vs the original version:
+- Uses multiprocessing.Pool to query shards in parallel (on POSIX / fork).
+- Fixes k_shard so we don't over-fetch per shard:
+    * We split top_k roughly evenly across non-empty shards.
+    * Sum of k_shard over shards ≈ top_k (no "* 2" multiplier).
+- When upsert is called after queries, we tear down the pool so the next
+  query will re-fork with the updated indexes.
+
+Implementation notes:
+- This pattern relies on fork semantics: child processes inherit the
+  hnswlib.Index objects via copy-on-write. We DO NOT pass indexes through
+  pickling; instead, workers access them via module-level globals.
+- On platforms without "fork" (e.g., Windows), we fall back to running
+  queries in the main process (still correct, just not parallel).
+"""
+
+# ---------- module-level globals used by worker processes ----------
+
+_GLOBAL_SHARDS: List[hnswlib.Index] = []
+_GLOBAL_LABEL2ID: List[Dict[int, str]] = []
+_GLOBAL_META: Dict[str, Optional[dict]] = {}
+_GLOBAL_METRIC: str = "cosine"
+
+
+def _shard_query_worker(args):
+    """
+    Worker function run in a separate process.
+
+    Args:
+        args: (shard_idx, q_vec, k_shard)
+
+    Returns:
+        List[hit dicts] for this shard only.
+    """
+    shard_idx, q, k_shard = args
+    index = _GLOBAL_SHARDS[shard_idx]
+    labels, distances = index.knn_query(q[None, :], k=k_shard)
+
+    l2id = _GLOBAL_LABEL2ID[shard_idx]
+    hits = []
+    for label, dist in zip(labels[0], distances[0]):
+        vid = l2id.get(int(label))
+        if vid is None:
+            continue
+        if _GLOBAL_METRIC == "cosine":
+            score = float(1.0 - dist)
+        else:  # "l2"
+            score = float(-dist)
+        hits.append(
+            {
+                "id": vid,
+                "score": score,
+                "metadata": _GLOBAL_META.get(vid),
+            }
+        )
+    return hits
 
 
 class ShardedHNSWCollection(BaseCollection):
@@ -17,9 +77,9 @@ class ShardedHNSWCollection(BaseCollection):
     - Inserts are round-robin sharded across `n_shards`.
     - Each shard is a normal HNSW index.
     - Queries:
-        * Dispatch a knn_query to each shard concurrently (via a persistent
-          ThreadPoolExecutor).
-        * Each shard returns only a small slice of candidates.
+        * Dispatch a knn_query to each shard concurrently via a
+          multiprocessing.Pool (on POSIX / fork).
+        * Each shard returns a slice of candidates (k_shard).
         * All shard results are merged into a global top_k by score.
 
     Semantics:
@@ -75,17 +135,30 @@ class ShardedHNSWCollection(BaseCollection):
         # For round-robin sharding
         self._rr_counter: int = 0
 
-        # Persistent executor for shard queries
-        self._executor = ThreadPoolExecutor(max_workers=n_shards)
+        # Multiprocessing pool for shard queries (lazy-created on first query)
+        self._pool: Optional[mp.pool.Pool] = None
+        # Whether we were able to create a pool (if False, run in-process)
+        self._can_use_pool: bool = True
 
     def __del__(self):
-        # Best-effort shutdown; avoid hanging on interpreter exit
-        try:
-            self._executor.shutdown(wait=False)
-        except Exception:
-            pass
+        self._close_pool()
 
     # ---------- internal helpers ----------
+
+    def _close_pool(self) -> None:
+        """
+        Tear down the multiprocessing pool if it exists.
+        Called on destruction and whenever the index is structurally changed
+        (e.g., upsert).
+        """
+        if self._pool is not None:
+            try:
+                self._pool.terminate()
+                self._pool.join()
+            except Exception:
+                pass
+            finally:
+                self._pool = None
 
     def _pick_shard_for_new_id(self) -> int:
         """
@@ -105,11 +178,51 @@ class ShardedHNSWCollection(BaseCollection):
             self._shards[shard_idx].resize_index(new_max)
             self._max_elements[shard_idx] = new_max
 
+    def _ensure_pool(self) -> None:
+        """
+        Lazily create the multiprocessing pool and initialize module-level
+        globals used by worker processes. If we fail to create a 'fork'
+        context (e.g., on Windows), we disable pool usage and run queries
+        in-process.
+        """
+        if self._pool is not None or not self._can_use_pool:
+            return
+
+        try:
+            # Prefer 'fork' if available (POSIX)
+            try:
+                ctx = mp.get_context("fork")
+            except ValueError:
+                # Fall back to default context (may be 'spawn' on Windows)
+                ctx = mp.get_context()
+                # On 'spawn', our pattern with globals won't work correctly.
+                # So we disable pool usage entirely in that case.
+                if ctx.get_start_method() != "fork":
+                    self._can_use_pool = False
+                    return
+
+            # Important: set globals BEFORE creating pool, so forked
+            # processes inherit the fully-built indexes.
+            global _GLOBAL_SHARDS, _GLOBAL_LABEL2ID, _GLOBAL_META, _GLOBAL_METRIC
+            _GLOBAL_SHARDS = self._shards
+            _GLOBAL_LABEL2ID = self._label2id
+            _GLOBAL_META = self._meta
+            _GLOBAL_METRIC = self.metric
+
+            self._pool = ctx.Pool(processes=self._n_shards)
+        except Exception:
+            # If anything goes wrong, fall back to in-process execution.
+            self._pool = None
+            self._can_use_pool = False
+
     # ---------- BaseCollection API ----------
 
     def upsert(self, points: List[dict]) -> int:
         if not points:
             return 0
+
+        # Any structural change invalidates existing worker processes.
+        self._close_pool()
 
         # Group vectors per shard for batched add_items
         per_shard_vecs: List[List[np.ndarray]] = [[] for _ in range(self._n_shards)]
@@ -156,6 +269,9 @@ class ShardedHNSWCollection(BaseCollection):
         return len(points)
 
     def delete(self, ids: List[str]) -> int:
+        # Structural change → reset pool
+        self._close_pool()
+
         deleted = 0
         for vid in ids:
             loc = self._id2loc.pop(vid, None)
@@ -173,7 +289,8 @@ class ShardedHNSWCollection(BaseCollection):
             return []
 
         # Short-circuit if all shards are empty
-        total_count = sum(s.get_current_count() for s in self._shards)
+        counts = [s.get_current_count() for s in self._shards]
+        total_count = sum(counts)
         if total_count == 0:
             return []
 
@@ -184,42 +301,47 @@ class ShardedHNSWCollection(BaseCollection):
         # Global k must not exceed total points
         k_global = min(top_k, total_count)
 
-        # Decide per-shard k: smaller than global to reduce extra work,
-        # but with some headroom to keep recall high.
-        base_per_shard = max(k_global // self._n_shards, 1)
+        # Identify non-empty shards
+        nonempty = [(idx, cnt) for idx, cnt in enumerate(counts) if cnt > 0]
+        n_nonempty = len(nonempty)
+        if n_nonempty == 0:
+            return []
+
+        # Split k_global across non-empty shards WITHOUT over-fetching.
+        base = k_global // n_nonempty
+        extra = k_global % n_nonempty
 
         tasks = []
-        for shard_idx, index in enumerate(self._shards):
-            count = index.get_current_count()
-            if count == 0:
+        for i, (shard_idx, cnt) in enumerate(nonempty):
+            k_target = base + (1 if i < extra else 0)
+            if k_target <= 0:
                 continue
+            k_shard = min(k_target, cnt)
+            if k_shard <= 0:
+                continue
+            tasks.append((shard_idx, q, k_shard))
 
-            # Ask each shard for up to ~2 * base_per_shard (capped by count).
-            k_shard = min(base_per_shard * 2, count)
-
-            def _query_one_shard(idx=shard_idx, k=k_shard):
-                labels, distances = self._shards[idx].knn_query(q[None, :], k=k)
-                return idx, labels[0], distances[0]
-
-            tasks.append(self._executor.submit(_query_one_shard))
+        if not tasks:
+            return []
 
         shard_hits: List[dict] = []
-        for fut in as_completed(tasks):
-            shard_idx, labels, distances = fut.result()
-            l2id = self._label2id[shard_idx]
-            for label, dist in zip(labels, distances):
-                vid = l2id.get(int(label))
-                if vid is None:
-                    continue
-                if self.metric == "cosine":
-                    score = float(1.0 - dist)
-                else:  # "l2"
-                    score = float(-dist)
-                shard_hits.append({
-                    "id": vid,
-                    "score": score,
-                    "metadata": self._meta.get(vid),
-                })
+
+        # Try multiprocessing; if it's unavailable, run in-process.
+        self._ensure_pool()
+        if self._pool is not None and self._can_use_pool:
+            # Parallel across processes
+            results = self._pool.map(_shard_query_worker, tasks)
+            for hits in results:
+                shard_hits.extend(hits)
+        else:
+            # Fallback: run worker sequentially in the main process
+            global _GLOBAL_SHARDS, _GLOBAL_LABEL2ID, _GLOBAL_META, _GLOBAL_METRIC
+            _GLOBAL_SHARDS = self._shards
+            _GLOBAL_LABEL2ID = self._label2id
+            _GLOBAL_META = self._meta
+            _GLOBAL_METRIC = self.metric
+            for args in tasks:
+                shard_hits.extend(_shard_query_worker(args))
 
         if not shard_hits:
             return []
